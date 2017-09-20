@@ -46,6 +46,7 @@ AC_FUNC_UTIME_NULL
 AC_CHECK_FUNCS(gettimeofday regcomp strdup strtol)
 
 CFLAGS="$CFLAGS -Wall"
+LDFLAGS="$LDFLAGS -pthread"
 
 AC_CONFIG_FILES([
     Makefile
