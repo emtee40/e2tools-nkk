@@ -43,7 +43,6 @@
 
 #include "e2tools.h"
 #include "elist.h"
-#include "ls.h"
 #include <regex.h>
 #include <stdint.h>
 #include <inttypes.h>
@@ -62,6 +61,9 @@
 #define CREATE_OPT  0x0020
 #define INODE_OPT   0x0040
 #define NUMERIC_OPT 0x0080
+#define SHORT_OPT   0x0100
+#define FS_CONFIG_OPT 0x0200
+#define RECURSIVE_OPT 0x0400
 
 #define DIRECTORY_TYPE -1
 #define NORMAL_TYPE 0
@@ -74,6 +76,7 @@ struct list_dir_struct {
 
 typedef struct list_file_struct {
 	char *name;
+	char *full_name;
 	struct ext2_inode inode;
 	ext2_ino_t dir;
 	ext2_ino_t inode_num;
@@ -86,12 +89,21 @@ static const char *monstr[] = {
 	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
 };
 
+
+/* global variables */
 static ext2_filsys fs;
 static int max_name_len = 0;
 
-// forward function declarations
+// for recursion and multiple dir specs
+static elist_t *Dirs_To_List = NULL;
+static char *Current_Path = NULL;
+static int g_recursive = 0;
+
+
+/* forward function declarations */
 static int list_dir_proc(ext2_ino_t dir, int entry, struct ext2_dir_entry *dirent, int offset, int blocksize, char *buf, void *private);
 void free_ls_file_t(void *f);
+void fs_config_disp(ls_file_t *info, int *col, int options);
 void long_disp(ls_file_t *info, int *col, int options);
 void short_disp(ls_file_t *info, int *col, int options);
 int no_sort(const void *n1, const void *n2);
@@ -101,6 +113,45 @@ int mod_time_sort(const void *n1, const void *n2);
 int creat_time_sort(const void *n1, const void *n2);
 long add_ls_file(char *name, int namelen, ext2_ino_t dir, ext2_ino_t ino, int entry, int type, struct list_dir_struct *ls);
 elist_t *remove_ls_dups(elist_t *list);
+
+
+char *strdupcat_sanitized(const char *path, const char *file)
+{
+	int path_len;
+	int file_len;
+	char *full_name;
+	char *p = path;
+	int needs_slash = 0;
+
+	if (!path && !file)
+		return NULL;
+	else if (!path)
+		return strdup(file);
+
+	// remove leading / and .
+	while (p[0] == '/' || p[0] == '.')
+		p++;
+
+	path_len = strlen(p);
+	file_len = strlen(file);
+
+	if (path_len > 0 && p[path_len-1] != '/' && file[0] != '/')
+		needs_slash = 1;
+
+	full_name = malloc(path_len + needs_slash + file_len + 1);
+
+	if (!full_name) {
+		perror("malloc");
+		return NULL;
+	}
+
+	memcpy(full_name, p, path_len);
+	full_name[path_len] = '/'; // don't really need to if() it
+	memcpy(full_name + path_len + needs_slash, file, file_len + 1);
+//fprintf(stderr,"FULLNAME=%s\n", full_name);
+	return full_name;
+}
+
 
 #if 1
 /* ********************************************************************************** */
@@ -291,6 +342,10 @@ static int list_dir_proc(ext2_ino_t dir, int entry, struct ext2_dir_entry *diren
 	if (0 == (ls->options & HIDDEN_OPT) && name[0] == '.')
 		return(0);
 
+	// always skip . and ..
+	if ((name[0] == '.' && name[1] == 0) || (name[0] == '.' && name[1] == '.' && name[2] == 0))
+		return(0);
+
 	if ((ls->options & REGEX_OPT) && regexec(ls->reg, name, 0, NULL, 0))
 		return(0);
 
@@ -350,8 +405,10 @@ long add_ls_file(char *name, int namelen, ext2_ino_t dir, ext2_ino_t ino,
 		}
 	}
 
-	if (name)
+	if (name) {
 		file_info->name = strdup(name);
+		file_info->full_name = strdupcat_sanitized(Current_Path, name);
+	}
 
 	if (NULL == (flist = elist_insert(ls->files, file_info))) {
 		perror("list_dir");
@@ -362,6 +419,11 @@ long add_ls_file(char *name, int namelen, ext2_ino_t dir, ext2_ino_t ino,
 
 	if (max_name_len < namelen)
 		max_name_len = namelen;
+
+	if (g_recursive && type == NORMAL_TYPE && LINUX_S_ISDIR(file_info->inode.i_mode)) {
+		// if we're recursing append this dir to the list
+		Dirs_To_List = elist_append(Dirs_To_List, strdup(file_info->full_name));
+	}
 
 	return 0;
 }
@@ -439,7 +501,7 @@ void free_ls_file_t(void *f)
  *                                  out REGEX_OPT.
  */
 
-long do_list_dir(int argc, char *argv[])
+long main(int argc, char *argv[])
 {
 	ext2_ino_t root;
 	ext2_ino_t cwd;
@@ -455,7 +517,7 @@ long do_list_dir(int argc, char *argv[])
 	char *dir_name;
 	char *base_name;
 	int (*file_sort)(const void *n1, const void *n2) = name_sort;
-	void (*file_disp)(ls_file_t *n, int *col, int options) = short_disp;
+	void (*file_disp)(ls_file_t *n, int *col, int options) = fs_config_disp;
 	elist_t *files=NULL;
 	int col=0;
 	ls_file_t *cur_file;
@@ -510,8 +572,10 @@ long do_list_dir(int argc, char *argv[])
 		}
 	}
 
+ls.options |= FS_CONFIG_OPT;
+
 	if (argc <= optind) {
-		fputs("Usage: e2ls [-acDfilrt][-d dir] file\n", stderr);
+		fputs("Usage: make_fs_config [-acDfilrt][-d dir] file\n", stderr);
 		return(1);
 	}
 
@@ -617,6 +681,9 @@ long do_list_dir(int argc, char *argv[])
 			else if (dup_path)
 				path = dup_path;
 
+			// we need to set a global variable so it can be picked up by add_ls_file()
+			Current_Path = dup_path;
+
 
 			//        if(add_ls_file((ls.options & REGEX_OPT) ? dir_name : path, 0, inode, 0,
 			if(add_ls_file(path, 0, inode, 0, 0, DIRECTORY_TYPE, &ls)) {
@@ -640,10 +707,16 @@ long do_list_dir(int argc, char *argv[])
 	ls.files = files = remove_ls_dups(ls.files);
 
 	if (files == NULL)
-		printf("No files found!");
+		fprintf(stderr, "No files found!");
 	else {
 		while(files != NULL) {
 			cur_file = (ls_file_t *)files->data;
+			if (ls.options & FS_CONFIG_OPT) {
+				if (cur_file->type != DIRECTORY_TYPE) {
+					(file_disp)(cur_file, &col, ls.options);
+				}
+			}
+			else
 			if (cur_file->type == DIRECTORY_TYPE) {
 				if (col > 0) {
 					putchar('\n');
@@ -664,7 +737,7 @@ long do_list_dir(int argc, char *argv[])
 
 			files = files->next;
 		}
-		if (last_type == DIRECTORY_TYPE)
+		if (last_type == DIRECTORY_TYPE && !(ls.options & FS_CONFIG_OPT))
 			printf("No files found!");
 	}
 
@@ -672,8 +745,27 @@ long do_list_dir(int argc, char *argv[])
 
 	elist_free(ls.files, free_ls_file_t);
 
-	ext2fs_close(fs);
+	if (fs)
+		ext2fs_close(fs);
 	return(0);
+}
+
+void fs_config_disp(ls_file_t *info, int UNUSED_PARM(*col), int options)
+{
+	if (info->entry == DIRENT_DELETED_FILE || info->inode_num == 0) {
+		// nothing
+	}
+	else {
+		// full_name  uid  gid  mode [capabilities=caps]
+		printf("%-50s  ", info->full_name);
+		printf("%5d %5d  ", info->inode.i_uid, info->inode.i_gid);
+		printf("%6o  ", info->inode.i_mode);
+
+		if (strncmp(info->inode.blarp + 48, "capability", 10) == 0) {
+			printf("  capabilities=");
+		}
+		printf("\n");
+	}
 }
 
 /* Name:    long_disp()
