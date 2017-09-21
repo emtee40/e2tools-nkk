@@ -102,6 +102,153 @@ int creat_time_sort(const void *n1, const void *n2);
 long add_ls_file(char *name, int namelen, ext2_ino_t dir, ext2_ino_t ino, int entry, int type, struct list_dir_struct *ls);
 elist_t *remove_ls_dups(elist_t *list);
 
+#if 1
+/* ********************************************************************************** */
+/* my_strcmp() from copy.c */
+int my_strcmp(const void *n1, const void *n2)
+{
+	char *s1 = *((char **)n1);
+	char *s2 = *((char **)n2);
+
+	return(strcmp(s1, s2));
+}
+
+/* change_cwd() from mkdir.c */
+/* Name:    change_cwd()
+ *
+ * Description:
+ *
+ * This function changes the current working directory
+ *
+ * Algorithm:
+ *
+ * Look up the inode number for the input string
+ * check to see if it's a directory
+ * Assign it as the current working directory if it is.
+ *
+ * Global Variables:
+ *
+ * None
+ *
+ * Arguments:
+ *
+ * ext2_filsys fs;         The current filesystem
+ * ext_ino_t root;         The root directory
+ * ext_ino_t *cwd;         The current working directory
+ * char *dirname;          The name of the directory we want to change to
+ *
+ * Return Values:
+ *
+ * 0 - changed to the directory successfully
+ * the error code of what went wrong
+ *
+ * Author: Keith W Sheffield
+ * Date:   02/21/2002
+ *
+ * Modification History:
+ *
+ * MM/DD/YY      Name               Description
+ *
+ */
+long
+change_cwd(ext2_filsys fs, ext2_ino_t root, ext2_ino_t *cwd, char *dirname)
+{
+  ext2_ino_t inode;
+  long retval;
+
+  if ((retval = ext2fs_namei(fs, root, *cwd, dirname, &inode)))
+    {
+      fprintf(stderr, "%s\n", error_message(retval));
+      return retval;
+    }
+  else if ((retval = ext2fs_check_directory(fs, inode)))
+    {
+      fprintf(stderr, "%s\n", error_message(retval));
+      return retval;
+    }
+  *cwd = inode;
+  return(0);
+} /* end of change_cwd */
+
+/* get_file_parts() from mv.c */
+/* Name:    get_file_parts()
+ *
+ * Description:
+ *
+ * This function returns each of the following file 'parts': directory name,
+ * base name, inode number of the directory
+ *
+ * Algorithm:
+ *
+ * Use the root directory as the current working directory
+ * Find the last / in the full pathname
+ *     If none are found, set the basename to the full pathname,
+ *     and the directory to NULL
+ * Otherwise,
+ *     Separate the basename from the directory
+ *     Change the working directory
+ * Set the return pointers.
+ *
+ * Global Variables:
+ *
+ * None.
+ *
+ * Arguments:
+ *
+ * ext2_filsys fs;            the filesystem being used
+ * ext2_ino_t root;           the root directory of the filesystem
+ * char *pathname;            the full pathname of the file
+ * ext2_ino_t *dir_ino;       The inode number of the directory
+ * char **dir_name;           the directory the file is in
+ * char **base_name;          The basename of the file
+ *
+ * Return Values:
+ *
+ * 0 - retrieved the information ok
+ * otherwise the error code of what went wrong
+ *
+ * Author: Keith W. Sheffield
+ * Date:   03/21/2002
+ *
+ * Modification History:
+ *
+ * MM/DD/YY      Name               Description
+ *
+ */
+long
+get_file_parts(ext2_filsys fs, ext2_ino_t root, char *pathname,
+               ext2_ino_t *dir_ino, char **dir_name, char **base_name)
+{
+  char *fname;
+  long retval;
+
+  /* move to the source directory */
+  *dir_name = pathname;
+  *dir_ino = root;
+  if (NULL == (fname = strrchr(pathname, '/')))
+    {
+      fname = pathname;
+      *dir_name = NULL;
+    }
+  else
+    {
+      *fname++ = '\0';
+      if ((*pathname != '\0' && strcmp(pathname, ".") != 0) &&
+          (retval = change_cwd(fs, root, dir_ino, pathname)))
+        {
+          fprintf(stderr, "Error changing to directory %s\n",
+                  pathname);
+          return(retval);
+        }
+    }
+
+    *base_name = fname;
+    return(0);
+} /* end of get_file_parts */
+/* ********************************************************************************** */
+#endif
+
+
 /* Name:    list_dir_proc()
  *
  * Description:
