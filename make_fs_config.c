@@ -66,56 +66,41 @@
 #define DIRECTORY_TYPE -1
 #define NORMAL_TYPE 0
 
-struct list_dir_struct
-{
-  int options;
-  regex_t *reg;
-  elist_t *files;
+struct list_dir_struct {
+	int options;
+	regex_t *reg;
+	elist_t *files;
 };
 
-typedef struct list_file_struct
-{
-
-  char *name;
-  struct ext2_inode inode;
-  ext2_ino_t dir;
-  ext2_ino_t inode_num;
-  int entry;
-  long type;
+typedef struct list_file_struct {
+	char *name;
+	struct ext2_inode inode;
+	ext2_ino_t dir;
+	ext2_ino_t inode_num;
+	int entry;
+	long type;
 } ls_file_t;
 
-static const char *monstr[] =
-{ "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+static const char *monstr[] = {
+	"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
 };
 
 static ext2_filsys fs;
 static int max_name_len = 0;
 
-static int
-list_dir_proc(ext2_ino_t dir, int entry, struct ext2_dir_entry *dirent,
-              int offset, int blocksize, char *buf, void *private);
-void
-free_ls_file_t(void *f);
-void
-long_disp(ls_file_t *info, int *col, int options);
-void
-short_disp(ls_file_t *info, int *col, int options);
-int
-no_sort(const void *n1, const void *n2);
-int
-name_sort(const void *n1, const void *n2);
-int
-inode_sort(const void *n1, const void *n2);
-int
-mod_time_sort(const void *n1, const void *n2);
-int
-creat_time_sort(const void *n1, const void *n2);
-long
-add_ls_file(char *name, int namelen, ext2_ino_t dir, ext2_ino_t ino,
-            int entry, int type, struct list_dir_struct *ls);
-elist_t *
-remove_ls_dups(elist_t *list);
+// forward function declarations
+static int list_dir_proc(ext2_ino_t dir, int entry, struct ext2_dir_entry *dirent, int offset, int blocksize, char *buf, void *private);
+void free_ls_file_t(void *f);
+void long_disp(ls_file_t *info, int *col, int options);
+void short_disp(ls_file_t *info, int *col, int options);
+int no_sort(const void *n1, const void *n2);
+int name_sort(const void *n1, const void *n2);
+int inode_sort(const void *n1, const void *n2);
+int mod_time_sort(const void *n1, const void *n2);
+int creat_time_sort(const void *n1, const void *n2);
+long add_ls_file(char *name, int namelen, ext2_ino_t dir, ext2_ino_t ino, int entry, int type, struct list_dir_struct *ls);
+elist_t *remove_ls_dups(elist_t *list);
 
 /* Name:    list_dir_proc()
  *
@@ -143,32 +128,26 @@ remove_ls_dups(elist_t *list);
  * MM/DD/YY      Name               Description
  * 02/27/02      K.Sheffield        Modified for use with e2tools
  */
-static int
-list_dir_proc(ext2_ino_t dir, int entry, struct ext2_dir_entry *dirent,
-              int UNUSED_PARM(offset), int UNUSED_PARM(blocksize),
-              char UNUSED_PARM(*buf), void *private)
+static int list_dir_proc(ext2_ino_t dir, int entry, struct ext2_dir_entry *dirent,
+                         int UNUSED_PARM(offset), int UNUSED_PARM(blocksize),
+                         char UNUSED_PARM(*buf), void *private)
 {
-  char name[EXT2_NAME_LEN];
-  struct list_dir_struct *ls = (struct list_dir_struct *) private;
-  int thislen;
+	char name[EXT2_NAME_LEN];
+	struct list_dir_struct *ls = (struct list_dir_struct *) private;
+	int thislen;
 
-  thislen = ((dirent->name_len & 0xFF) < EXT2_NAME_LEN) ?
-    (dirent->name_len & 0xFF) : EXT2_NAME_LEN;
-  strncpy(name, dirent->name, thislen);
-  name[thislen] = '\0';
+	thislen = ((dirent->name_len & 0xFF) < EXT2_NAME_LEN) ? (dirent->name_len & 0xFF) : EXT2_NAME_LEN;
+	strncpy(name, dirent->name, thislen);
+	name[thislen] = '\0';
 
-  /* skip hidden files unless we ask for them */
-  if (0 == (ls->options & HIDDEN_OPT) &&
-      name[0] == '.')
-    return(0);
+	/* skip hidden files unless we ask for them */
+	if (0 == (ls->options & HIDDEN_OPT) && name[0] == '.')
+		return(0);
 
-  if ((ls->options & REGEX_OPT) &&
-      regexec(ls->reg, name, 0, NULL, 0))
-    return(0);
+	if ((ls->options & REGEX_OPT) && regexec(ls->reg, name, 0, NULL, 0))
+		return(0);
 
-  return(add_ls_file(name, thislen, dir, dirent->inode, entry, NORMAL_TYPE,
-                     ls));
-
+	return(add_ls_file(name, thislen, dir, dirent->inode, entry, NORMAL_TYPE, ls));
 }
 
 /* Name:    add_ls_file()
@@ -196,53 +175,48 @@ list_dir_proc(ext2_ino_t dir, int entry, struct ext2_dir_entry *dirent,
  *
  * MM/DD/YY      Name               Description
  */
-long
-add_ls_file(char *name, int namelen, ext2_ino_t dir, ext2_ino_t ino,
-            int entry, int type, struct list_dir_struct *ls)
+long add_ls_file(char *name, int namelen, ext2_ino_t dir, ext2_ino_t ino,
+                 int entry, int type, struct list_dir_struct *ls)
 {
-  ls_file_t *file_info;
-  elist_t *flist;
+	ls_file_t *file_info;
+	elist_t *flist;
 
-  if (NULL == (file_info = calloc(sizeof(ls_file_t),1)))
-    {
-      perror("list_dir");
-      return(0);
-    }
+	if (NULL == (file_info = calloc(sizeof(ls_file_t),1))) {
+		perror("list_dir");
+		return(0);
+	}
 
-  file_info->dir = dir;
+	file_info->dir = dir;
 
-  if (entry == DIRENT_DELETED_FILE)
-    file_info->inode_num = 0;
-  else
-    file_info->inode_num = ino;
+	if (entry == DIRENT_DELETED_FILE)
+		file_info->inode_num = 0;
+	else
+		file_info->inode_num = ino;
 
-  file_info->entry = entry;
-  file_info->type = type;
+	file_info->entry = entry;
+	file_info->type = type;
 
-  if (file_info->inode_num)
-    {
-    if (read_inode(fs, file_info->inode_num, &file_info->inode))
-        {
-        free(file_info);
-        return 0;
-        }
-    }
+	if (file_info->inode_num) {
+		if (read_inode(fs, file_info->inode_num, &file_info->inode)) {
+			free(file_info);
+			return 0;
+		}
+	}
 
-  if (name)
-    file_info->name = strdup(name);
+	if (name)
+		file_info->name = strdup(name);
 
-  if (NULL == (flist = elist_insert(ls->files, file_info)))
-    {
-      perror("list_dir");
-      free_ls_file_t(file_info);
-      return 0;
-    }
-  ls->files = flist;
+	if (NULL == (flist = elist_insert(ls->files, file_info))) {
+		perror("list_dir");
+		free_ls_file_t(file_info);
+		return 0;
+	}
+	ls->files = flist;
 
-  if (max_name_len < namelen)
-    max_name_len = namelen;
+	if (max_name_len < namelen)
+		max_name_len = namelen;
 
-  return 0;
+	return 0;
 }
 
 /* Name:    free_ls_file_t()
@@ -279,14 +253,13 @@ add_ls_file(char *name, int namelen, ext2_ino_t dir, ext2_ino_t ino,
  */
 void free_ls_file_t(void *f)
 {
-  ls_file_t *n = (ls_file_t *) f;
+	ls_file_t *n = (ls_file_t *) f;
 
-  if (n != NULL)
-    {
-      if (n->name != NULL)
-        free(n->name);
-      free(n);
-    }
+	if (n != NULL) {
+		if (n->name != NULL)
+			free(n->name);
+		free(n);
+	}
 } /* end of free_ls_file_t */
 
 /* Name:    do_list_dir()
@@ -319,274 +292,241 @@ void free_ls_file_t(void *f)
  *                                  out REGEX_OPT.
  */
 
-long
-do_list_dir(int argc, char *argv[])
+long do_list_dir(int argc, char *argv[])
 {
-  ext2_ino_t root;
-  ext2_ino_t cwd;
-  ext2_ino_t inode=0;
-  int retval;
-  int c;
-  int flags;
-  struct list_dir_struct ls;
-  char *fs_name;
-  char *last_fs_name;
-  char *path = NULL;
-  char *dup_path = NULL;
-  char *dir_name;
-  char *base_name;
-  int (*file_sort)(const void *n1, const void *n2) = name_sort;
-  void (*file_disp)(ls_file_t *n, int *col, int options) = short_disp;
-  elist_t *files=NULL;
-  int col=0;
-  ls_file_t *cur_file;
-  long last_type = 1;
+	ext2_ino_t root;
+	ext2_ino_t cwd;
+	ext2_ino_t inode=0;
+	int retval;
+	int c;
+	int flags;
+	struct list_dir_struct ls;
+	char *fs_name;
+	char *last_fs_name;
+	char *path = NULL;
+	char *dup_path = NULL;
+	char *dir_name;
+	char *base_name;
+	int (*file_sort)(const void *n1, const void *n2) = name_sort;
+	void (*file_disp)(ls_file_t *n, int *col, int options) = short_disp;
+	elist_t *files=NULL;
+	int col=0;
+	ls_file_t *cur_file;
+	long last_type = 1;
 
-  memset(&ls, 0, sizeof(ls));
+	memset(&ls, 0, sizeof(ls));
 
-  last_fs_name = NULL;
+	last_fs_name = NULL;
 #ifdef HAVE_OPTRESET
-  optreset = 1;     /* Makes BSD getopt happy */
+	optreset = 1;     /* Makes BSD getopt happy */
 #endif
-  while ((c = getopt (argc, argv, "acDd:filnrt")) != EOF)
-    {
-      switch (c)
-        {
-        case 'a':
-          ls.options |= HIDDEN_OPT;
-          break;
-        case 'c':
-          ls.options |= CREATE_OPT;
-          break;
-        case 'l':
-          file_disp = long_disp;
-          break;
-        case 'n':
-          file_disp = long_disp;
-          ls.options |= NUMERIC_OPT;
-          break;
-        case 'D':
-          ls.options |= DELETED_OPT;
-          break;
-        case 'd':
-          fs_name = optarg;
-          if (NULL != (path = strchr(fs_name, ':')))
-            *path++ = '\0';
-          if ((retval = open_filesystem(fs_name, &fs, &root, 0)))
-            {
-              return(1);
-            }
-          last_fs_name = fs_name;
-          break;
-        case 'f':
-          file_sort = no_sort;
-          break;
-        case 't':
-          file_sort = mod_time_sort;
-          break;
-        case 'r':
-          ls.options |= REVERSE_OPT;
-          break;
-        case 'i':
-          file_sort = inode_sort;
-          ls.options |= INODE_OPT;
-          break;
-        }
-    }
+	while ((c = getopt (argc, argv, "acDd:filnrt")) != EOF) {
+		switch (c) {
+			case 'a':
+				ls.options |= HIDDEN_OPT;
+				break;
+			case 'c':
+				ls.options |= CREATE_OPT;
+				break;
+			case 'l':
+				file_disp = long_disp;
+				break;
+			case 'n':
+				file_disp = long_disp;
+				ls.options |= NUMERIC_OPT;
+				break;
+			case 'D':
+				ls.options |= DELETED_OPT;
+				break;
+			case 'd':
+				fs_name = optarg;
+				if (NULL != (path = strchr(fs_name, ':')))
+					*path++ = '\0';
+				if ((retval = open_filesystem(fs_name, &fs, &root, 0))) {
+					return(1);
+				}
+				last_fs_name = fs_name;
+				break;
+			case 'f':
+				file_sort = no_sort;
+				break;
+			case 't':
+				file_sort = mod_time_sort;
+				break;
+			case 'r':
+				ls.options |= REVERSE_OPT;
+				break;
+			case 'i':
+				file_sort = inode_sort;
+				ls.options |= INODE_OPT;
+				break;
+		}
+	}
 
-  if (argc <= optind)
-    {
-      fputs("Usage: e2ls [-acDfilrt][-d dir] file\n", stderr);
-      return(1);
-    }
+	if (argc <= optind) {
+		fputs("Usage: e2ls [-acDfilrt][-d dir] file\n", stderr);
+		return(1);
+	}
 
-  if (ls.options & CREATE_OPT &&
-      (file_sort == mod_time_sort || file_disp != long_disp))
-    file_sort = creat_time_sort;
+	if (ls.options & CREATE_OPT && (file_sort == mod_time_sort || file_disp != long_disp))
+		file_sort = creat_time_sort;
 
-  /* sort the remaining command line arguments */
-  qsort(argv+optind, argc-optind, sizeof(char *), my_strcmp);
+	/* sort the remaining command line arguments */
+	qsort(argv+optind, argc-optind, sizeof(char *), my_strcmp);
 
-  for(c=optind;c<argc;c++)
-    {
-      fs_name = argv[c];
+	for(c=optind;c<argc;c++) {
+		fs_name = argv[c];
 
-      if (NULL != (path = strchr(fs_name, ':')))
-        *path++ = '\0';
-      else if (last_fs_name != NULL)
-        {
-        path = fs_name;
-        fs_name = last_fs_name;
-        }
+		if (NULL != (path = strchr(fs_name, ':')))
+			*path++ = '\0';
+		else if (last_fs_name != NULL) {
+			path = fs_name;
+			fs_name = last_fs_name;
+		}
 
-      /* keep a copy of the file path for later because get_file_parts() is
-       * destructive.
-       */
+		/* keep a copy of the file path for later because get_file_parts() is
+		 * destructive.
+		 */
 
-      if (dup_path)
-        {
-          free(dup_path);
-          dup_path = NULL;
-        }
+		if (dup_path) {
+			free(dup_path);
+			dup_path = NULL;
+		}
 
-      if (path)
-        dup_path = strdup(path);
+		if (path)
+			dup_path = strdup(path);
 
-      if (last_fs_name == NULL || strcmp(last_fs_name, fs_name))
-        {
-          if (last_fs_name != NULL)
-            ext2fs_close(fs);
+		if (last_fs_name == NULL || strcmp(last_fs_name, fs_name)) {
+			if (last_fs_name != NULL)
+				ext2fs_close(fs);
 
-          if ((retval = open_filesystem(fs_name, &fs, &root, 0)))
-            {
-              return(1);
-            }
-          last_fs_name = fs_name;
-        }
+			if ((retval = open_filesystem(fs_name, &fs, &root, 0))) {
+				return(1);
+			}
+			last_fs_name = fs_name;
+		}
 
-      dir_name = NULL;
-      cwd = root;
-      ls.options &= (~REGEX_OPT);
+		dir_name = NULL;
+		cwd = root;
+		ls.options &= (~REGEX_OPT);
 
-      if (path != NULL && *path != '\0')
-        {
-          if (get_file_parts(fs, root, path, &cwd, &dir_name, &base_name))
-            {
-              ext2fs_close(fs);
-              return(-1);
-            }
+		if (path != NULL && *path != '\0') {
+			if (get_file_parts(fs, root, path, &cwd, &dir_name, &base_name)) {
+				ext2fs_close(fs);
+				return(-1);
+			}
 
-          if (is_file_regexp(base_name))
-            {
-              if (NULL == (ls.reg = (regex_t *) make_regexp(base_name)))
-                {
-                  fprintf(stderr,
-                          "Error creating regular expression for %s\n",
-                          base_name);
-                  return(1);
-                }
-              ls.options |= REGEX_OPT;
-              inode = cwd;
+			if (is_file_regexp(base_name)) {
+				if (NULL == (ls.reg = (regex_t *) make_regexp(base_name))) {
+					fprintf(stderr, "Error creating regular expression for %s\n", base_name);
+					return(1);
+				}
+				ls.options |= REGEX_OPT;
+				inode = cwd;
+			}
+			/* check to see if the file name exists in the current directory
+			 */
+			else if ((retval = ext2fs_namei(fs, cwd, cwd, base_name, &inode))) {
+				fputs(error_message(retval), stderr);
+				ext2fs_close(fs);
+				return(1);
+			}
+		}
+		else
+			inode = root;
 
-            }
-          /* check to see if the file name exists in the current directory
-           */
-          else if ((retval = ext2fs_namei(fs, cwd, cwd, base_name, &inode)))
-            {
-              fputs(error_message(retval), stderr);
-              ext2fs_close(fs);
-              return(1);
-            }
-        }
-      else
-          inode = root;
+		if(!dir_name)
+			dir_name = ".";
 
-      if(!dir_name)
-        dir_name = ".";
+		if (!inode)
+			continue;
 
-      if (!inode)
-        continue;
+		flags = DIRENT_FLAG_INCLUDE_EMPTY;
+		if (ls.options & DELETED_OPT)
+			flags |= DIRENT_FLAG_INCLUDE_REMOVED;
 
-      flags = DIRENT_FLAG_INCLUDE_EMPTY;
-      if (ls.options & DELETED_OPT)
-        flags |= DIRENT_FLAG_INCLUDE_REMOVED;
+		if ((retval = ext2fs_check_directory(fs, inode))) {
+			if (retval != EXT2_ET_NO_DIRECTORY) {
+				fputs(error_message(retval), stderr);
+				ext2fs_close(fs);
+				return(1);
+			}
 
-      if ((retval = ext2fs_check_directory(fs, inode)))
-        {
-        if (retval != EXT2_ET_NO_DIRECTORY)
-            {
-              fputs(error_message(retval), stderr);
-              ext2fs_close(fs);
-              return(1);
-            }
+			if(add_ls_file(dir_name, 0, cwd, 0, 0, DIRECTORY_TYPE, &ls)) {
+				fputs(error_message(retval), stderr);
+				ext2fs_close(fs);
+				return(1);
+			}
 
-        if(add_ls_file(dir_name, 0, cwd, 0, 0, DIRECTORY_TYPE, &ls))
-          {
-            fputs(error_message(retval), stderr);
-            ext2fs_close(fs);
-            return(1);
-          }
-
-        if(add_ls_file(base_name, strlen(base_name), cwd, inode, 0,
-                       NORMAL_TYPE, &ls))
-          {
-            fputs(error_message(retval), stderr);
-            ext2fs_close(fs);
-            return(1);
-          }
-        }
-      else
-        {
-          if (ls.options & REGEX_OPT || path == NULL || *path == '\0')
-            path = dir_name;
-          else if (dup_path)
-            path = dup_path;
+			if(add_ls_file(base_name, strlen(base_name), cwd, inode, 0, NORMAL_TYPE, &ls)) {
+				fputs(error_message(retval), stderr);
+				ext2fs_close(fs);
+				return(1);
+			}
+		}
+		else {
+			if (ls.options & REGEX_OPT || path == NULL || *path == '\0')
+				path = dir_name;
+			else if (dup_path)
+				path = dup_path;
 
 
-          //        if(add_ls_file((ls.options & REGEX_OPT) ? dir_name : path, 0, inode, 0,
-          if(add_ls_file(path, 0, inode, 0, 0, DIRECTORY_TYPE, &ls))
-            {
-              fputs(error_message(retval), stderr);
-              ext2fs_close(fs);
-              return(1);
-            }
+			//        if(add_ls_file((ls.options & REGEX_OPT) ? dir_name : path, 0, inode, 0,
+			if(add_ls_file(path, 0, inode, 0, 0, DIRECTORY_TYPE, &ls)) {
+				fputs(error_message(retval), stderr);
+				ext2fs_close(fs);
+				return(1);
+			}
 
-          retval = ext2fs_dir_iterate2(fs, inode, flags, 0, list_dir_proc,
-                                       &ls);
-          if (retval)
-            {
-              fputs(error_message(retval), stderr);
-              ext2fs_close(fs);
-              return(1);
-            }
-        }
-    }
+			retval = ext2fs_dir_iterate2(fs, inode, flags, 0, list_dir_proc, &ls);
+			if (retval) {
+				fputs(error_message(retval), stderr);
+				ext2fs_close(fs);
+				return(1);
+			}
+		}
+	}
 
 
-  elist_sort(ls.files, file_sort, ls.options & REVERSE_OPT);
+	elist_sort(ls.files, file_sort, ls.options & REVERSE_OPT);
 
-  ls.files = files = remove_ls_dups(ls.files);
+	ls.files = files = remove_ls_dups(ls.files);
 
-  if (files == NULL)
-    printf("No files found!");
-  else
-    {
-      while(files != NULL)
-        {
-          cur_file = (ls_file_t *)files->data;
-          if (cur_file->type == DIRECTORY_TYPE)
-            {
-              if (col > 0)
-                {
-                  putchar('\n');
-                  col = 0;
-                }
-              if (last_type == DIRECTORY_TYPE)
-                printf("No files found!\n");
+	if (files == NULL)
+		printf("No files found!");
+	else {
+		while(files != NULL) {
+			cur_file = (ls_file_t *)files->data;
+			if (cur_file->type == DIRECTORY_TYPE) {
+				if (col > 0) {
+					putchar('\n');
+					col = 0;
+				}
+				if (last_type == DIRECTORY_TYPE)
+					printf("No files found!\n");
 
-              printf("%s:", cur_file->name);
-            }
-          else
-            {
-              if (last_type == DIRECTORY_TYPE)
-                putchar('\n');
-              (file_disp)(cur_file, &col, ls.options);
-            }
+					printf("%s:", cur_file->name);
+			}
+			else {
+				if (last_type == DIRECTORY_TYPE)
+					putchar('\n');
+				(file_disp)(cur_file, &col, ls.options);
+			}
 
-          last_type = cur_file->type;
+			last_type = cur_file->type;
 
-          files = files->next;
-        }
-      if (last_type == DIRECTORY_TYPE)
-        printf("No files found!");
-    }
+			files = files->next;
+		}
+		if (last_type == DIRECTORY_TYPE)
+			printf("No files found!");
+	}
 
-  putchar('\n');
+	putchar('\n');
 
-  elist_free(ls.files, free_ls_file_t);
+	elist_free(ls.files, free_ls_file_t);
 
-  ext2fs_close(fs);
-  return(0);
+	ext2fs_close(fs);
+	return(0);
 }
 
 /* Name:    long_disp()
@@ -626,97 +566,89 @@ do_list_dir(int argc, char *argv[])
  */
 void long_disp(ls_file_t *info, int UNUSED_PARM(*col), int options)
 {
-  char lbr, rbr;
-  char modestr[11];
-  char userstr[9];
-  char groupstr[9];
-  char datestr[80];
-  time_t modtime;
-  struct tm *tm_p;
+	char lbr, rbr;
+	char modestr[11];
+	char userstr[9];
+	char groupstr[9];
+	char datestr[80];
+	time_t modtime;
+	struct tm *tm_p;
 
 
-  if (info->entry == DIRENT_DELETED_FILE ||
-      info->inode_num == 0)
-    {
-      lbr = '>';
-      rbr = '<';
-    }
-  else
-    {
-        lbr = rbr = ' ';
-    }
+	if (info->entry == DIRENT_DELETED_FILE || info->inode_num == 0) {
+		lbr = '>';
+		rbr = '<';
+	}
+	else {
+		lbr = rbr = ' ';
+	}
 
-  sprintf(modestr, "%c%c%c%c%c%c%c%c%c%c",
-          LINUX_S_ISLNK(info->inode.i_mode) ? 'l' :
-          LINUX_S_ISDIR(info->inode.i_mode) ? 'd' :
-          LINUX_S_ISCHR(info->inode.i_mode) ? 'c' :
-          LINUX_S_ISBLK(info->inode.i_mode) ? 'b' :
-          LINUX_S_ISFIFO(info->inode.i_mode) ? 'p' :
-          LINUX_S_ISSOCK(info->inode.i_mode) ? 's' : '-',
-          (info->inode.i_mode & (1 << 8)) ? 'r' : '-',
-          (info->inode.i_mode & (1 << 7)) ? 'w' : '-',
-          (info->inode.i_mode & LINUX_S_ISUID) ? 'S' :
-          (info->inode.i_mode & (1 << 6)) ? 'x' : '-',
-          (info->inode.i_mode & (1 << 5)) ? 'r' : '-',
-          (info->inode.i_mode & (1 << 4)) ? 'w' : '-',
-          (info->inode.i_mode & LINUX_S_ISGID) ? 'S' :
-          (info->inode.i_mode & (1 << 3)) ? 'x' : '-',
-          (info->inode.i_mode & (1 << 2)) ? 'r' : '-',
-          (info->inode.i_mode & (1 << 1)) ? 'w' : '-',
-          (info->inode.i_mode & LINUX_S_ISVTX) ? 'T' :
-          (info->inode.i_mode & (1 << 0)) ? 'x' : '-');
+	sprintf(modestr, "%c%c%c%c%c%c%c%c%c%c",
+	                 LINUX_S_ISLNK(info->inode.i_mode) ? 'l' :
+	                 LINUX_S_ISDIR(info->inode.i_mode) ? 'd' :
+	                 LINUX_S_ISCHR(info->inode.i_mode) ? 'c' :
+	                 LINUX_S_ISBLK(info->inode.i_mode) ? 'b' :
+	                 LINUX_S_ISFIFO(info->inode.i_mode) ? 'p' :
+	                 LINUX_S_ISSOCK(info->inode.i_mode) ? 's' : '-',
+	                 (info->inode.i_mode & (1 << 8)) ? 'r' : '-',
+	                 (info->inode.i_mode & (1 << 7)) ? 'w' : '-',
+	                 (info->inode.i_mode & LINUX_S_ISUID) ? 'S' :
+	                 (info->inode.i_mode & (1 << 6)) ? 'x' : '-',
+	                 (info->inode.i_mode & (1 << 5)) ? 'r' : '-',
+	                 (info->inode.i_mode & (1 << 4)) ? 'w' : '-',
+	                 (info->inode.i_mode & LINUX_S_ISGID) ? 'S' :
+	                 (info->inode.i_mode & (1 << 3)) ? 'x' : '-',
+	                 (info->inode.i_mode & (1 << 2)) ? 'r' : '-',
+	                 (info->inode.i_mode & (1 << 1)) ? 'w' : '-',
+	                 (info->inode.i_mode & LINUX_S_ISVTX) ? 'T' :
+	                 (info->inode.i_mode & (1 << 0)) ? 'x' : '-');
 
-  if (info->inode_num)
-    {
-      if (options & CREATE_OPT)
-        modtime = info->inode.i_ctime;
-      else
-        modtime = info->inode.i_mtime;
-      tm_p = localtime(&modtime);
-      sprintf(datestr, "%2d-%s-%4d %02d:%02d",
-              tm_p->tm_mday, monstr[tm_p->tm_mon],
-              1900 + tm_p->tm_year, tm_p->tm_hour,
-              tm_p->tm_min);
-    }
-  else
-    strcpy(datestr, "                 ");
+	if (info->inode_num) {
+		if (options & CREATE_OPT)
+			modtime = info->inode.i_ctime;
+		else
+			modtime = info->inode.i_mtime;
+		tm_p = localtime(&modtime);
+		sprintf(datestr, "%2d-%s-%4d %02d:%02d",
+	                     tm_p->tm_mday, monstr[tm_p->tm_mon],
+	                     1900 + tm_p->tm_year, tm_p->tm_hour,
+	                     tm_p->tm_min);
+	}
+	else
+		strcpy(datestr, "                 ");
 
-  if (options & NUMERIC_OPT)
-    {
-      const int userlen = 5;
+	if (options & NUMERIC_OPT) {
+		const int userlen = 5;
 
-      sprintf(userstr, "%*d", userlen, info->inode.i_uid);
-      sprintf(groupstr, "%*d", userlen, info->inode.i_gid);
-    }
-  else
-    {
-      const int userlen = 8;
-      char buf[1024];
-      struct passwd pwd, *p_pwd;
-      struct group grp, *p_grp;
+		sprintf(userstr, "%*d", userlen, info->inode.i_uid);
+		sprintf(groupstr, "%*d", userlen, info->inode.i_gid);
+	}
+	else {
+		const int userlen = 8;
+		char buf[1024];
+		struct passwd pwd, *p_pwd;
+		struct group grp, *p_grp;
 
-      getpwuid_r(info->inode.i_uid, &pwd, buf, sizeof(buf), &p_pwd);
-      if (p_pwd)
-          snprintf(userstr, userlen+1, "%*s", userlen, pwd.pw_name);
-      else
-          sprintf(userstr, "%*d", userlen, info->inode.i_uid);
+		getpwuid_r(info->inode.i_uid, &pwd, buf, sizeof(buf), &p_pwd);
+		if (p_pwd)
+			snprintf(userstr, userlen+1, "%*s", userlen, pwd.pw_name);
+		else
+			sprintf(userstr, "%*d", userlen, info->inode.i_uid);
 
-      getgrgid_r(info->inode.i_gid, &grp, buf, sizeof(buf), &p_grp);
-      if (p_grp)
-          snprintf(groupstr, userlen+1, "%*s", userlen, grp.gr_name);
-      else
-          sprintf(groupstr, "%*d", userlen, info->inode.i_gid);
-    }
+		getgrgid_r(info->inode.i_gid, &grp, buf, sizeof(buf), &p_grp);
+		if (p_grp)
+			snprintf(groupstr, userlen+1, "%*s", userlen, grp.gr_name);
+		else
+			sprintf(groupstr, "%*d", userlen, info->inode.i_gid);
+	}
 
 
-  printf("%c%6u%c %10s %s %s  ", lbr, info->inode_num, rbr,
-         modestr, userstr, groupstr);
-  if (LINUX_S_ISDIR(info->inode.i_mode))
-    printf("%7d", info->inode.i_size);
-  else
-    printf("%7" PRIu64, (uint64_t)(info->inode.i_size |
-                  ((__u64)info->inode.i_size_high << 32)));
-  printf(" %s %s\n", datestr, info->name);
+	printf("%c%6u%c %10s %s %s  ", lbr, info->inode_num, rbr, modestr, userstr, groupstr);
+	if (LINUX_S_ISDIR(info->inode.i_mode))
+		printf("%7d", info->inode.i_size);
+	else
+		printf("%7" PRIu64, (uint64_t)(info->inode.i_size | ((__u64)info->inode.i_size_high << 32)));
+	printf(" %s %s\n", datestr, info->name);
 
 } /* end of long_disp */
 
@@ -756,61 +688,54 @@ void long_disp(ls_file_t *info, int UNUSED_PARM(*col), int options)
  */
 void short_disp(ls_file_t *info, int *col, int options)
 {
-  char lbr, rbr;
-  char tmp[300];
-  int thislen;
-  static int max_col_size = 0;
+	char lbr, rbr;
+	char tmp[300];
+	int thislen;
+	static int max_col_size = 0;
 
-  if (max_col_size == 0)
-    {
-      max_col_size = 80/(max_name_len + 2 + ((options & INODE_OPT) ? 8 : 0));
-      if (max_col_size == 0)
-        max_col_size = -1;
-      else
-        max_col_size = 80/max_col_size;
-    }
+	if (max_col_size == 0) {
+		max_col_size = 80/(max_name_len + 2 + ((options & INODE_OPT) ? 8 : 0));
+		if (max_col_size == 0)
+			max_col_size = -1;
+		else
+			max_col_size = 80/max_col_size;
+	}
 
 
-  if (info->entry == DIRENT_DELETED_FILE ||
-      info->inode_num == 0)
-    {
-      lbr = '>';
-      rbr = '<';
-    }
-  else
-    {
-      lbr = 0;
-      rbr = ' ';
-    }
+	if (info->entry == DIRENT_DELETED_FILE || info->inode_num == 0) {
+		lbr = '>';
+		rbr = '<';
+	}
+	else {
+		lbr = 0;
+		rbr = ' ';
+	}
 
-  if (lbr == 0)
-    {
-      if (options & INODE_OPT)
-        sprintf(tmp, "%7d %s%c", info->inode_num, info->name, rbr);
-      else
-        sprintf(tmp, "%s%c", info->name, rbr);
-    }
-  else
-    {
-      if (options & INODE_OPT)
-        sprintf(tmp, "%7d %c%s%c", info->inode_num, lbr, info->name, rbr);
-      else
-        sprintf(tmp, "%c%s%c", lbr, info->name, rbr);
-    }
+	if (lbr == 0) {
+		if (options & INODE_OPT)
+			sprintf(tmp, "%7d %s%c", info->inode_num, info->name, rbr);
+		else
+			sprintf(tmp, "%s%c", info->name, rbr);
+	}
+	else {
+		if (options & INODE_OPT)
+			sprintf(tmp, "%7d %c%s%c", info->inode_num, lbr, info->name, rbr);
+		else
+			sprintf(tmp, "%c%s%c", lbr, info->name, rbr);
+	}
 
-  thislen = strlen(tmp);
+	thislen = strlen(tmp);
 
-  if (*col + thislen > 80)
-    {
-      putchar('\n');
-      *col = 0;
-    }
-  thislen = max_col_size - thislen;
-  if (thislen < 0)
-    thislen = 0;
+	if (*col + thislen > 80) {
+		putchar('\n');
+		*col = 0;
+	}
+	thislen = max_col_size - thislen;
+	if (thislen < 0)
+		thislen = 0;
 
-  printf("%s%*.*s", tmp, thislen, thislen, "");
-  *col += max_col_size;
+	printf("%s%*.*s", tmp, thislen, thislen, "");
+	*col += max_col_size;
 }
 
 /* Name:    no_sort()
@@ -849,11 +774,11 @@ void short_disp(ls_file_t *info, int *col, int options)
  */
 int no_sort(const void *n1, const void *n2)
 {
-  ls_file_t *f1 = *((ls_file_t **) n1);
-  ls_file_t *f2 = *((ls_file_t **) n2);
-  int retval;
+	ls_file_t *f1 = *((ls_file_t **) n1);
+	ls_file_t *f2 = *((ls_file_t **) n2);
+	int retval;
 
-  return((retval = (f1->dir - f2->dir)) ? retval : (f1->type - f2->type));
+	return((retval = (f1->dir - f2->dir)) ? retval : (f1->type - f2->type));
 
 } /* end of name_sort */
 
@@ -893,13 +818,13 @@ int no_sort(const void *n1, const void *n2)
  */
 int name_sort(const void *n1, const void *n2)
 {
-  ls_file_t *f1 = *((ls_file_t **) n1);
-  ls_file_t *f2 = *((ls_file_t **) n2);
-  int retval;
+	ls_file_t *f1 = *((ls_file_t **) n1);
+	ls_file_t *f2 = *((ls_file_t **) n2);
+	int retval;
 
-  return((retval = (f1->dir - f2->dir)) ? retval :
-         ((retval = (f1->type - f2->type)) ? retval :
-          strcmp(f1->name, f2->name)));
+	return((retval = (f1->dir - f2->dir)) ? retval :
+	       ((retval = (f1->type - f2->type)) ? retval :
+	        strcmp(f1->name, f2->name)));
 } /* end of name_sort */
 
 /* Name:    inode_sort()
@@ -938,13 +863,13 @@ int name_sort(const void *n1, const void *n2)
  */
 int inode_sort(const void *n1, const void *n2)
 {
-  ls_file_t *f1 = *((ls_file_t **) n1);
-  ls_file_t *f2 = *((ls_file_t **) n2);
-  int retval;
+	ls_file_t *f1 = *((ls_file_t **) n1);
+	ls_file_t *f2 = *((ls_file_t **) n2);
+	int retval;
 
-  return((retval = (f1->dir - f2->dir)) ? retval :
-         ((retval = (f1->type - f2->type)) ? retval :
-          (int)(f1->inode_num - f2->inode_num)));
+	return((retval = (f1->dir - f2->dir)) ? retval :
+	       ((retval = (f1->type - f2->type)) ? retval :
+	        (int)(f1->inode_num - f2->inode_num)));
 } /* end of inode_sort */
 
 /* Name:    mod_time_sort()
@@ -983,13 +908,13 @@ int inode_sort(const void *n1, const void *n2)
  */
 int mod_time_sort(const void *n1, const void *n2)
 {
-  ls_file_t *f1 = *((ls_file_t **) n1);
-  ls_file_t *f2 = *((ls_file_t **) n2);
-  int retval;
+	ls_file_t *f1 = *((ls_file_t **) n1);
+	ls_file_t *f2 = *((ls_file_t **) n2);
+	int retval;
 
-  return((retval = (f1->dir - f2->dir)) ? retval :
-         ((retval = (f1->type - f2->type)) ? retval :
-          (int)(f2->inode.i_mtime - f1->inode.i_mtime)));
+	return((retval = (f1->dir - f2->dir)) ? retval :
+	       ((retval = (f1->type - f2->type)) ? retval :
+	        (int)(f2->inode.i_mtime - f1->inode.i_mtime)));
 
 } /* end of mod_time_sort */
 
@@ -1029,13 +954,13 @@ int mod_time_sort(const void *n1, const void *n2)
  */
 int creat_time_sort(const void *n1, const void *n2)
 {
-  ls_file_t *f1 = *((ls_file_t **) n1);
-  ls_file_t *f2 = *((ls_file_t **) n2);
-  int retval;
+	ls_file_t *f1 = *((ls_file_t **) n1);
+	ls_file_t *f2 = *((ls_file_t **) n2);
+	int retval;
 
-  return((retval = (f1->dir - f2->dir)) ? retval :
-         ((retval = (f1->type - f2->type)) ? retval :
-          (int)(f2->inode.i_ctime - f1->inode.i_ctime)));
+	return((retval = (f1->dir - f2->dir)) ? retval :
+	       ((retval = (f1->type - f2->type)) ? retval :
+	        (int)(f2->inode.i_ctime - f1->inode.i_ctime)));
 } /* end of creat_time_sort */
 
 /* Name:    remove_ls_dups()
@@ -1078,32 +1003,29 @@ int creat_time_sort(const void *n1, const void *n2)
  */
 elist_t * remove_ls_dups(elist_t *list)
 {
-  elist_t *start = list;
-  ls_file_t *cd;
-  int cnt=0;
+	elist_t *start = list;
+	ls_file_t *cd;
+	int cnt=0;
 
-  while(list != NULL)
-    {
-      cd = (ls_file_t *) list->data;
-      if (cd == NULL)
-        {
-          /* remove any empty nodes */
-          if (list == start)
-            start = list->next;
-          list = elist_delete(list, free_ls_file_t);
-          continue;
-        }
-      else if (cd->type == DIRECTORY_TYPE)
-        {
-          cnt++;
-        }
-      list = list->next;
-    }
+	while(list != NULL) {
+		cd = (ls_file_t *) list->data;
+		if (cd == NULL) {
+			/* remove any empty nodes */
+			if (list == start)
+				start = list->next;
+			list = elist_delete(list, free_ls_file_t);
+			continue;
+		}
+		else if (cd->type == DIRECTORY_TYPE) {
+			cnt++;
+		}
+		list = list->next;
+	}
 
-  /* if there is only one directory entry, delete it */
-  if (cnt == 1)
-    start = elist_delete(start, free_ls_file_t);
+	/* if there is only one directory entry, delete it */
+	if (cnt == 1)
+		start = elist_delete(start, free_ls_file_t);
 
-  return(start);
+	return(start);
 
 } /* end of remove_ls_dups */
