@@ -1,7 +1,7 @@
 SUBDIRS = lib .
 ACLOCAL_AMFLAGS = -I m4
 
-bin_PROGRAMS = e2tools
+bin_PROGRAMS = e2tools make_fs_config
 
 AM_CPPFLAGS = $(EXT2FS_CFLAGS) $(COM_ERR_CFLAGS)
 e2tools_LDADD = $(EXT2FS_LIBS) $(COM_ERR_LIBS)
@@ -19,6 +19,12 @@ e2tools_SOURCES = \
 	tail.c tail.h \
 	util.c util.h \
 	write.c write.h
+
+make_fs_config_LDADD = $(EXT2FS_LIBS) $(COM_ERR_LIBS)
+make_fs_config_SOURCES = \
+	elist.c elist.h \
+	util.c util.h \
+	make_fs_config.c
 
 EXTRA_DIST = README TODO
 dist_man_MANS = e2tools.7
