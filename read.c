@@ -268,7 +268,7 @@ long
 read_to_eof(ext2_file_t infile, int UNUSED_PARM(dest_fd), ext2_off_t offset,
             ext2_off_t *ret_pos)
 {
-  char buf[4096];
+  static char buf[1024*1024*10];
   unsigned int bytes_read;
   int retval;
 
