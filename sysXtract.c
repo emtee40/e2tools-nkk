@@ -1,3 +1,23 @@
+/*
+ * sysXtract
+ *
+ * Copyright 2017 nkk71 <nkk71x@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
 /* $Header: /home/ksheff/src/e2tools/RCS/ls.c,v 0.8 2004/04/07 03:30:49 ksheff Exp $ */
 /*
  * ls.c --- list directories
@@ -49,6 +69,8 @@
 #include <pwd.h>
 #include <grp.h>
 
+#define VERSION_STR "0.8.1"
+
 /*
  * list directory
  */
@@ -94,7 +116,8 @@ static const char *monstr[] = {
 };
 
 
-/* Things we need for capabilities */
+/* Things we need for selinux and capabilities */
+#define XATTR_SELINUX_SUFFIX "selinux"
 #define XATTR_CAPS_SUFFIX "capability"
 #define VFS_CAP_U32 2
 
@@ -118,21 +141,29 @@ static char *Current_Path = NULL;
 // path prefix for fs_config format
 static char *fs_config_Path_Prefix = NULL;
 
+// output files
+static char *extract_path = NULL;
+static FILE *fp_file_contexts = NULL;
+static FILE *fp_C_fs_config = NULL;
+static FILE *fp_X_fs_config = NULL;
+static FILE *fp_D_listing = NULL;
+static FILE *fp_symlinks = NULL;
+
+static int g_count_dir = 0;
+static int g_count_reg = 0;
+static int g_count_lnk = 0;
+static int g_count_unknown = 0;
+
+static int g_verbose = 1;
 
 /* forward function declarations */
 static int list_dir_proc(ext2_ino_t dir, int entry, struct ext2_dir_entry *dirent, int offset, int blocksize, char *buf, void *private);
 void free_ls_file_t(void *f);
-void fs_config_disp(ls_file_t *info, int *col, int options);
-void long_disp(ls_file_t *info, int *col, int options);
-void short_disp(ls_file_t *info, int *col, int options);
-int no_sort(const void *n1, const void *n2);
-int name_sort(const void *n1, const void *n2);
+void fprintf_long_disp(FILE *fp, ls_file_t *info, const char *selinux_context, struct vfs_cap_data *capabilities, char *symlink_dest, int options);
 int full_name_sort(const void *n1, const void *n2);
-int inode_sort(const void *n1, const void *n2);
-int mod_time_sort(const void *n1, const void *n2);
-int creat_time_sort(const void *n1, const void *n2);
 long add_ls_file(char *name, int namelen, ext2_ino_t dir, ext2_ino_t ino, int entry, int type, struct list_dir_struct *ls);
 elist_t *remove_ls_dups(elist_t *list);
+void extract_file(ls_file_t *info, int options);
 
 
 char *strdupcat_sanitized(const char *path, const char *file)
@@ -149,8 +180,13 @@ char *strdupcat_sanitized(const char *path, const char *file)
 		return strdup(file);
 
 	// remove leading / and .
+	/*
+	 * do not remove leading . that will just break hidden
+	 * dirs in the base folder, instead fix the command
+	 * line parsing when given paths
 	while (p[0] == '/' || p[0] == '.')
 		p++;
+	*/
 
 	path_len = strlen(p);
 	file_len = strlen(file);
@@ -168,7 +204,7 @@ char *strdupcat_sanitized(const char *path, const char *file)
 	memcpy(full_name, p, path_len);
 	full_name[path_len] = '/'; // don't really need to if() it
 	memcpy(full_name + path_len + needs_slash, file, file_len + 1);
-//fprintf(stderr,"FULLNAME=%s\n", full_name);
+
 	return full_name;
 }
 
@@ -363,7 +399,7 @@ static int list_dir_proc(ext2_ino_t dir, int entry, struct ext2_dir_entry *diren
 		return(0);
 
 	// always skip . and ..
-	if ((name[0] == '.' && name[1] == 0) || (name[0] == '.' && name[1] == '.' && name[2] == 0))
+	if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0)))
 		return(0);
 
 	if ((ls->options & REGEX_OPT) && regexec(ls->reg, name, 0, NULL, 0))
@@ -425,9 +461,23 @@ long add_ls_file(char *name, int namelen, ext2_ino_t dir, ext2_ino_t ino,
 		}
 	}
 
+	if (file_info->inode_num) {
+		if (LINUX_S_ISDIR(file_info->inode.i_mode))
+			g_count_dir++;
+		else if (LINUX_S_ISREG(file_info->inode.i_mode))
+			g_count_reg++;
+		else if  (LINUX_S_ISLNK(file_info->inode.i_mode))
+			g_count_lnk++;
+		else
+			g_count_unknown++;
+	}
+
 	if (name) {
 		file_info->name = strdup(name);
-		file_info->full_name = strdupcat_sanitized(Current_Path, name);
+		if (type == DIRECTORY_TYPE)
+			file_info->full_name = strdupcat_sanitized("", name);
+		else
+			file_info->full_name = strdupcat_sanitized(Current_Path, name);
 	}
 
 	if (NULL == (flist = elist_insert(ls->files, file_info))) {
@@ -493,37 +543,8 @@ void free_ls_file_t(void *f)
 	}
 } /* end of free_ls_file_t */
 
-/* Name:    do_list_dir()
- *
- * Description:
- *
- *
- * Algorithm:
- *
- *
- * Global Variables:
- *
- * None
- *
- * Arguments:
- *
- *
- * Return Values:
- *
- *
- * Author: Theodore Ts'o
- * Date:   1997
- *
- * Modification History:
- *
- * MM/DD/YY      Name               Description
- * 02/27/02      K.Sheffield        Modified for use with e2tools
- * 04/06/04      K.Sheffield        Modified to print "No Files Found!" for
- *                                  each empty directory.  Corrected masking
- *                                  out REGEX_OPT.
- */
 
-long main(int argc, char *argv[])
+int main(int argc, char *argv[])
 {
 	ext2_ino_t root;
 	ext2_ino_t cwd;
@@ -538,12 +559,8 @@ long main(int argc, char *argv[])
 	char *dup_path = NULL;
 	char *dir_name;
 	char *base_name;
-	int (*file_sort)(const void *n1, const void *n2) = full_name_sort;
-	void (*file_disp)(ls_file_t *n, int *col, int options) = fs_config_disp;
 	elist_t *files=NULL;
-	int col=0;
 	ls_file_t *cur_file;
-	long last_type = 1;
 
 	memset(&ls, 0, sizeof(ls));
 
@@ -555,32 +572,8 @@ long main(int argc, char *argv[])
 	// default for make_fs_config
 	ls.options |= FS_CONFIG_OPT;
 
-	while ((c = getopt (argc, argv, "acDd:fiLlnp:Rrtx:")) != EOF) {
+	while ((c = getopt (argc, argv, "C:D:d:F:L:p:qRS:X:x:")) != EOF) {
 		switch (c) {
-			case 'L':
-				// defaults for ls
-				file_sort = name_sort;
-				file_disp = short_disp;
-				ls.options &= ~FS_CONFIG_OPT;
-				break;
-			case 'a':
-				ls.options |= HIDDEN_OPT;
-				break;
-			case 'c':
-				ls.options |= CREATE_OPT;
-				break;
-			case 'l':
-				file_disp = long_disp;
-				ls.options &= ~FS_CONFIG_OPT;
-				break;
-			case 'n':
-				file_disp = long_disp;
-				ls.options &= ~FS_CONFIG_OPT;
-				ls.options |= NUMERIC_OPT;
-				break;
-			case 'D':
-				ls.options |= DELETED_OPT;
-				break;
 			case 'd':
 				fs_name = optarg;
 				if (NULL != (path = strchr(fs_name, ':')))
@@ -589,19 +582,6 @@ long main(int argc, char *argv[])
 					return(1);
 				}
 				last_fs_name = fs_name;
-				break;
-			case 'f':
-				file_sort = no_sort;
-				break;
-			case 't':
-				file_sort = mod_time_sort;
-				break;
-			case 'r':
-				ls.options |= REVERSE_OPT;
-				break;
-			case 'i':
-				file_sort = inode_sort;
-				ls.options |= INODE_OPT;
 				break;
 			case 'R':
 				ls.options |= RECURSIVE_OPT;
@@ -622,20 +602,56 @@ long main(int argc, char *argv[])
 					optarg++;
 				}
 				break;
+			case 'S':
+				fp_file_contexts = fopen(optarg, "w");
+				break;
+			case 'C':
+				fp_C_fs_config = fopen(optarg, "w");
+				break;
+			case 'X':
+				fp_X_fs_config = fopen(optarg, "w");
+				break;
+			case 'L':
+				fp_symlinks = fopen(optarg, "w");
+				break;
+			case 'F':
+				extract_path = optarg;
+				break;
+			case 'D':
+				fp_D_listing = fopen(optarg, "w");
+				break;
+			case 'q':
+				g_verbose = 0;
+				break;
 		}
 	}
 
-	// show hidden files in fs_config mode
-	if (ls.options & FS_CONFIG_OPT)
-		ls.options |= HIDDEN_OPT;
+	// show hidden files
+	ls.options |= HIDDEN_OPT;
+
+	// always use numeric format
+	ls.options |= NUMERIC_OPT;
 
 	if (argc <= optind) {
-		fputs("Usage: make_fs_config [-LacDfilrtR][-x LDRN][-p prefix][-d dir] file\n", stderr);
+		fputs("\n"
+		      "Usage: sysXtract " VERSION_STR " [-qR][-xLDRN][-F dir][-D file][-L file][-p prefix][-S file][-C file][-X file] file\n\n"
+		      "       [-q]                    Quieter (don't continuously print progress while extracting files)\n"
+		      "       [-R]                    List subdirectories recursively\n"
+		      "       [-x LDRN]               Exclude [L]symlinks  [D]directories  [R]regular files  [N]files without capabilities\n"
+		      "       [-F OutputDir]          Directory to extract regular files to\n"
+		      "       [-D dir_listing]        File to output ls -lRZ style output\n"
+		      "       [-L symlink_list]       File to output symlink informtion\n"
+		      "       [-p prefix]             Prefix used for below file_contexts and fs_config entries\n"
+		      "       [-S file_contexts]      File to output file_contexts information\n"
+		      "       [-C fs_config]          File to output complete fs_config information\n"
+		      "       [-X xtra_fs_config]     File to output capabilities-only fs_config\n"
+		      "       file                    ext4 image file to be processed\n"
+		      "\n", stderr);
 		return(1);
 	}
 
-	if (ls.options & CREATE_OPT && (file_sort == mod_time_sort || file_disp != long_disp))
-		file_sort = creat_time_sort;
+	fprintf(stderr, "\n");
+	fprintf(stderr, "sysXtract " VERSION_STR "\n");
 
 	/* sort the remaining command line arguments */
 	//qsort(argv+optind, argc-optind, sizeof(char *), my_strcmp);
@@ -655,6 +671,7 @@ long main(int argc, char *argv[])
 			Dirs_To_List = NULL;
 		}
 
+		// TODO: mkdir_recursive on base path if specified (make sure to exclude file is it's a file)
 		if (path)
 			Dirs_To_List = elist_append(Dirs_To_List, strdup(path));
 		else
@@ -683,6 +700,7 @@ long main(int argc, char *argv[])
 				if ((retval = open_filesystem(fs_name, &fs, &root, 0))) {
 					return(1);
 				}
+				fprintf(stderr, "Reading '%s'\n", fs_name);
 				last_fs_name = fs_name;
 			}
 
@@ -774,62 +792,79 @@ long main(int argc, char *argv[])
 		Dirs_To_List = NULL;
 	}
 
+	fprintf(stderr, "Scan complete:\n");
+	fprintf(stderr, "    %6d directories\n", g_count_dir);
+	fprintf(stderr, "    %6d regular files\n", g_count_reg);
+	fprintf(stderr, "    %6d symlinks\n", g_count_lnk);
+	if (g_count_unknown) {
+		fprintf(stderr, "    %6d unknown entries! Please inform the developer!\n", g_count_unknown);
+	}
+	int total_count = g_count_dir + g_count_reg + g_count_lnk + g_count_unknown;
 
-	elist_sort(ls.files, file_sort, ls.options & REVERSE_OPT);
+	fprintf(stderr, "Sorting and removing duplicates\n");
+
+	elist_sort(ls.files, full_name_sort, ls.options & REVERSE_OPT);
 
 	ls.files = files = remove_ls_dups(ls.files);
 
 	if (files == NULL)
 		fprintf(stderr, "No files found!");
 	else {
+		if (!g_verbose && extract_path) {
+			fprintf(stderr, "Extracting %d entries please wait...", total_count);
+		}
+
 		while(files != NULL) {
 			cur_file = (ls_file_t *)files->data;
-			if (ls.options & FS_CONFIG_OPT) {
-				if (cur_file->type != DIRECTORY_TYPE) {
-					(file_disp)(cur_file, &col, ls.options);
+
+#if 0
+			// does not work properly (probably due to sort)
+			if (fp_D_listing && cur_file->type == DIRECTORY_TYPE) {
+				fprintf(fp_D_listing, "\n%s:\n", cur_file->full_name);
+			}
+#endif
+
+			if (cur_file->type != DIRECTORY_TYPE) {
+				extract_file(cur_file, ls.options);
+				if (g_verbose && extract_path) {
+					fprintf(stderr, "\rExtracting files: %d remaining    \r",--total_count);
 				}
 			}
-			else
-			if (cur_file->type == DIRECTORY_TYPE) {
-				if (col > 0) {
-					putchar('\n');
-					col = 0;
-				}
-				if (last_type == DIRECTORY_TYPE)
-					printf("No files found!\n");
-
-					printf("%s:", cur_file->name);
-			}
-			else {
-				if (last_type == DIRECTORY_TYPE)
-					putchar('\n');
-				(file_disp)(cur_file, &col, ls.options);
-			}
-
-			last_type = cur_file->type;
+			//~ else
+				//~ printf("mkdir %s\n", cur_file->full_name);
 
 			files = files->next;
 		}
-		if (last_type == DIRECTORY_TYPE && !(ls.options & FS_CONFIG_OPT))
-			printf("No files found!");
 	}
+	//fprintf(stderr, "\rExtracting files: 0 remaining    \r");
 
-	putchar('\n');
+	fputc('\n', stderr);
 
 	elist_free(ls.files, free_ls_file_t);
 
+	if (fp_file_contexts)
+		fclose(fp_file_contexts);
+	if (fp_C_fs_config)
+		fclose(fp_C_fs_config);
+	if (fp_X_fs_config)
+		fclose(fp_X_fs_config);
+	if (fp_symlinks)
+		fclose(fp_symlinks);
+
 	if (fs)
 		ext2fs_close(fs);
+
+	fprintf(stderr, "Finished.\n\n");
 	return(0);
 }
 
-struct vfs_cap_data *read_capabilities(ext2_ino_t inode_num)
+
+char *read_xattr(ext2_ino_t inode_num, const char *attribute)
 {
-	struct vfs_cap_data *caps = NULL;
+	char *ret = NULL;
 	struct ext2_xattr_handle *h;
 	char *buf = NULL;
 	size_t buflen;
-	size_t sz;
 	errcode_t err;
 	unsigned int handle_flags = 0;
 
@@ -845,13 +880,13 @@ struct vfs_cap_data *read_capabilities(ext2_ino_t inode_num)
 	if (err)
 		goto out;
 
-	err = ext2fs_xattr_get(h, "security." XATTR_CAPS_SUFFIX, (void **)&buf, &buflen);
+	err = ext2fs_xattr_get(h, attribute, (void **)&buf, &buflen);
 	if (err)
 		goto out;
 
-	caps = malloc(buflen);
-	if (caps)
-		memcpy(caps, buf, buflen);
+	ret = malloc(buflen);
+	if (ret)
+		memcpy(ret, buf, buflen);
 
 	ext2fs_free_mem(&buf);
 out:
@@ -860,48 +895,240 @@ out:
 	/* if (err)
 		com_err("xattrs_get", err, "while getting extended attribute"); */
 out2:
-	return caps;
+	return ret;
 }
 
-void fs_config_disp(ls_file_t *info, int UNUSED_PARM(*col), int options)
+void fprintf_symlink_entry(FILE *fp, ls_file_t *info, char *symlink_dest)
 {
-	if (info->entry == DIRENT_DELETED_FILE || info->inode_num == 0) {
-		// nothing
+	// edify format:
+	// fprintf(fp, "symlink(\"%s\", \"/%s\");\n", symlink_dest, info->full_name);
+
+	fprintf(fp, "%-30s   ->   %s\n", info->full_name, symlink_dest);
+}
+
+void fprintf_file_contexts_entry(FILE *fp, ls_file_t *info, const char *selinux_context)
+{
+	if (fs_config_Path_Prefix) {
+		if (fs_config_Path_Prefix[0] == '/')
+			fprintf(fp, "%s", fs_config_Path_Prefix);
+		else
+			fprintf(fp, "/%s", fs_config_Path_Prefix); // add leading / for file_contexts
 	}
-	else {
-		if ((options & EXCL_DIR_OPT) && LINUX_S_ISDIR(info->inode.i_mode))
-			return;
-		if ((options & EXCL_LNK_OPT) && LINUX_S_ISLNK(info->inode.i_mode))
-			return;
-		if ((options & EXCL_REG_OPT) && LINUX_S_ISREG(info->inode.i_mode))
-			return;
+	else
+		fprintf(fp,"/"); // add leading / for file_contexts
 
-		struct vfs_cap_data *capabilities = read_capabilities(info->inode_num);
+	fprintf(fp, "%-50s   %s\n", info->full_name, selinux_context);
+}
 
-		if ((options & EXCL_NONCAPS_OPT) && !capabilities)
-			return;
+void fprintf_fs_config_entry(FILE *fp, ls_file_t *info, struct vfs_cap_data *capabilities)
+{
+	// full_name  uid  gid  mode [capabilities=caps]
 
-		// full_name  uid  gid  mode [capabilities=caps]
-		if (fs_config_Path_Prefix)
-			printf("%s", fs_config_Path_Prefix);
-		printf("%-50s   ", info->full_name);
-		printf("%05d  %05d  ", info->inode.i_uid, info->inode.i_gid);
-		printf("%05o", info->inode.i_mode & 07777);
+	if (fs_config_Path_Prefix) {
+		if (fs_config_Path_Prefix[0] == '/')
+			fprintf(fp, "%s", fs_config_Path_Prefix + 1); // strip leading / for fs_config
+		else
+			fprintf(fp, "%s", fs_config_Path_Prefix);
+	}
 
-		/* Capabilities (struct vfs_cap_data) are stored as follows:
-		 *    cap_data.magic_etc = VFS_CAP_REVISION | VFS_CAP_FLAGS_EFFECTIVE;
-		 *    cap_data.data[0].permitted = (uint32_t) (capabilities & 0xffffffff);
-		 *    cap_data.data[0].inheritable = 0;
-		 *    cap_data.data[1].permitted = (uint32_t) (capabilities >> 32);
-		 *    cap_data.data[1].inheritable = 0;
-		 */
-		if (capabilities) {
-			uint64_t cap_data = ((uint64_t)capabilities->data[1].permitted << 32) + capabilities->data[0].permitted;
-			printf("  capabilities=%llu", cap_data);
-			free(capabilities);
+	fprintf(fp, "%-50s   ", info->full_name);
+	fprintf(fp, "%05d  %05d  ", info->inode.i_uid, info->inode.i_gid);
+	fprintf(fp, "%05o", info->inode.i_mode & 07777);
+
+	/* Capabilities (struct vfs_cap_data) are stored as follows:
+	 *    cap_data.magic_etc = VFS_CAP_REVISION | VFS_CAP_FLAGS_EFFECTIVE;
+	 *    cap_data.data[0].permitted = (uint32_t) (capabilities & 0xffffffff);
+	 *    cap_data.data[0].inheritable = 0;
+	 *    cap_data.data[1].permitted = (uint32_t) (capabilities >> 32);
+	 *    cap_data.data[1].inheritable = 0;
+	 */
+	if (capabilities) {
+		uint64_t cap_data = ((uint64_t)capabilities->data[1].permitted << 32) + capabilities->data[0].permitted;
+		fprintf(fp, "  capabilities=%lu", cap_data);
+	}
+	fprintf(fp, "\n");
+}
+
+int mkdir_recursive(const char *pathname, mode_t mode)
+{
+	char buf[1024];
+	const char *slash;
+	const char *p = pathname;
+	int width;
+	int ret;
+	struct stat info;
+
+	while ((slash = strchr(p, '/')) != NULL) {
+		width = slash - pathname;
+		p = slash + 1;
+		if (width < 0)
+			break;
+		if (width == 0)
+			continue;
+		if ((unsigned int)width > sizeof(buf) - 1) {
+			fprintf(stderr, "path too long for mkdir_recursive\n");
+			return -1;
 		}
-		printf("\n");
+		memcpy(buf, pathname, width);
+		buf[width] = 0;
+		if (stat(buf, &info) != 0) {
+			ret = mkdir(buf, mode);
+			if (ret && errno != EEXIST)
+				return ret;
+		}
 	}
+	ret = mkdir(pathname, mode);
+	if (ret && errno != EEXIST)
+		return ret;
+	return 0;
+}
+
+static char *get_inline_symlink(ext2_ino_t inode_num, struct ext2_inode *inode)
+{
+	char *symlink_dest = NULL;
+	errcode_t retval;
+	char *buf = NULL;
+	size_t size;
+
+	retval = ext2fs_inline_data_size(fs, inode_num, &size);
+	if (retval)
+		goto out;
+
+	retval = ext2fs_get_memzero(size + 1, &buf);
+	if (retval)
+		goto out;
+
+	retval = ext2fs_inline_data_get(fs, inode_num,
+					inode, buf, &size);
+	if (retval)
+		goto out;
+
+	symlink_dest = strdup(buf);
+
+out:
+	if (buf)
+		ext2fs_free_mem(&buf);
+	if (retval)
+		com_err(__func__, retval, "while dumping link destination");
+
+	return symlink_dest;
+}
+
+
+void extract_file(ls_file_t *info, int options)
+{
+	if (info->entry == DIRENT_DELETED_FILE || info->inode_num == 0)
+		return; // nothing
+
+	if ((options & EXCL_DIR_OPT) && LINUX_S_ISDIR(info->inode.i_mode))
+		return;
+	if ((options & EXCL_LNK_OPT) && LINUX_S_ISLNK(info->inode.i_mode))
+		return;
+	if ((options & EXCL_REG_OPT) && LINUX_S_ISREG(info->inode.i_mode))
+		return;
+
+	struct vfs_cap_data *capabilities = (struct vfs_cap_data *)read_xattr(info->inode_num, "security." XATTR_CAPS_SUFFIX);
+
+	if ((options & EXCL_NONCAPS_OPT) && !capabilities)
+		return;
+
+	char *selinux_context = (char *)read_xattr(info->inode_num, "security." XATTR_SELINUX_SUFFIX);
+	char *symlink_dest = NULL;
+
+	if (LINUX_S_ISLNK(info->inode.i_mode)) {
+		if (ext2fs_is_fast_symlink(&(info->inode))) {
+			/* Fast symlinks, target stored in inode */
+			symlink_dest = strdup((char *)info->inode.i_block);
+		}
+		else if (info->inode.i_flags & EXT4_INLINE_DATA_FL) {
+			/* An inline data symlink */
+			symlink_dest = get_inline_symlink(info->inode_num, &(info->inode));
+		}
+		else {
+			/* Slow symlinks, target stored in the first block */
+			int retval;
+			ext2_file_t infile;
+			ext2_off_t wanted;
+			unsigned int got;
+
+			if ((retval = ext2fs_file_open(fs, info->inode_num, 0, &infile))) {
+				fputs(error_message(retval), stderr);
+			}
+			else {
+				wanted = ext2fs_file_get_size(infile);
+				if (wanted > 0) {
+					symlink_dest = malloc(wanted);
+					if (symlink_dest) {
+						if ((retval = ext2fs_file_read(infile, symlink_dest, wanted, &got)))
+							fputs(error_message(retval), stderr);
+					}
+				}
+				if ((retval = ext2fs_file_close(infile)))
+					fputs(error_message(retval), stderr);
+			}
+		}
+	}
+
+	if (extract_path) {
+		char outfile[1024];
+		strcpy(outfile, extract_path);
+		if (outfile[strlen(outfile)] != '/')
+			strcat(outfile, "/");
+		strcat(outfile, info->full_name);
+
+		if (extract_path && LINUX_S_ISDIR(info->inode.i_mode)) {
+			// make the dir
+			mkdir_recursive(outfile, 0755);
+		}
+		else if (LINUX_S_ISREG(info->inode.i_mode)) {
+			// extract file
+			int keep = 0;
+
+			int dest = open(outfile, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+			if (dest >= 0) {
+				/* get the data from the ext2fs */
+				int retval = retrieve_data(fs, info->inode_num, dest, outfile, keep, 0, NULL);
+				close(dest);
+				if (retval) {
+					fprintf(stderr, "Error extracting '%s': %s\n", info->full_name, error_message(retval));
+					unlink(outfile);
+				}
+			}
+			else
+				perror(outfile);
+		}
+	}
+
+	if (fp_file_contexts && selinux_context) {
+		// append file_contexts
+		fprintf_file_contexts_entry(fp_file_contexts, info, selinux_context);
+	}
+
+	if (fp_C_fs_config) {
+		// append C_fs_config
+		fprintf_fs_config_entry(fp_C_fs_config, info, capabilities);
+	}
+
+	if (fp_X_fs_config && capabilities) {
+		// append X_fs_config
+		fprintf_fs_config_entry(fp_X_fs_config, info, capabilities);
+	}
+
+	if (fp_symlinks && symlink_dest) {
+		// append sym_links
+		fprintf_symlink_entry(fp_symlinks, info, symlink_dest);
+	}
+
+	if (fp_D_listing) {
+		fprintf_long_disp(fp_D_listing, info, selinux_context, capabilities, symlink_dest, options);
+	}
+
+	if (symlink_dest)
+		free(symlink_dest);
+	if (selinux_context)
+		free(selinux_context);
+	if (capabilities)
+		free(capabilities);
 }
 
 /* Name:    long_disp()
@@ -939,7 +1166,7 @@ void fs_config_disp(ls_file_t *info, int UNUSED_PARM(*col), int options)
  * 04/06/04      K.Sheffield        Modified to show entries with an inode of 0
  *                                  as deleted.
  */
-void long_disp(ls_file_t *info, int UNUSED_PARM(*col), int options)
+void fprintf_long_disp(FILE *fp, ls_file_t *info, const char *selinux_context, struct vfs_cap_data *capabilities, char *symlink_dest, int options)
 {
 	char lbr, rbr;
 	char modestr[11];
@@ -998,6 +1225,8 @@ void long_disp(ls_file_t *info, int UNUSED_PARM(*col), int options)
 		sprintf(userstr, "%*d", userlen, info->inode.i_uid);
 		sprintf(groupstr, "%*d", userlen, info->inode.i_gid);
 	}
+#if 0
+// always use numeric format from above
 	else {
 		const int userlen = 8;
 		char buf[1024];
@@ -1016,198 +1245,32 @@ void long_disp(ls_file_t *info, int UNUSED_PARM(*col), int options)
 		else
 			sprintf(groupstr, "%*d", userlen, info->inode.i_gid);
 	}
+#endif
 
+	fprintf(fp, "%c%6u%c %10s %s %s  ", lbr, info->inode_num, rbr, modestr, userstr, groupstr);
 
-	printf("%c%6u%c %10s %s %s  ", lbr, info->inode_num, rbr, modestr, userstr, groupstr);
+	if (selinux_context) {
+		fprintf(fp, "%-40s  ", selinux_context);
+	}
+
 	if (LINUX_S_ISDIR(info->inode.i_mode))
-		printf("%7d", info->inode.i_size);
+		fprintf(fp, "%9d", info->inode.i_size);
 	else
-		printf("%7" PRIu64, (uint64_t)(info->inode.i_size | ((__u64)info->inode.i_size_high << 32)));
-	printf(" %s %s", datestr, info->name);
+		fprintf(fp, "%9" PRIu64, (uint64_t)(info->inode.i_size | ((__u64)info->inode.i_size_high << 32)));
+	fprintf(fp, "  %s", datestr);
 
-	struct vfs_cap_data *capabilities = read_capabilities(info->inode_num);
+	fprintf(fp, "  /%s", info->full_name);
+
+	if (symlink_dest) {
+		fprintf(fp, " -> %s", symlink_dest);
+	}
+
 	if (capabilities) {
 		uint64_t cap_data = ((uint64_t)capabilities->data[1].permitted << 32) + capabilities->data[0].permitted;
-		printf("  (capabilities=0x%llx)", cap_data);
-		free(capabilities);
+		fprintf(fp, "  (capabilities=0x%lx)", cap_data);
 	}
-	printf("\n");
+	fprintf(fp, "\n");
 } /* end of long_disp */
-
-
-/* Name:    short_disp()
- *
- * Description:
- *
- * This function displays a file's information for a long listing
- *
- * Algorithm:
- *
- * Display the file's name at the appropriate column.
- *
- * Global Variables:
- *
- * none
- *
- * Arguments:
- *
- * ls_file_t *info;             The structure containing the file information
- * int *col;                    The current column
- * int options;                 Options to ls
- *
- * Return Values:
- *
- * None
- *
- * Author: Keith W. Sheffield
- * Date:   06/03/2002
- *
- * Modification History:
- *
- * MM/DD/YY      Name               Description
- * 04/06/04      K.Sheffield        Modified to show entries with an inode of 0
- *                                  as deleted.
- */
-void short_disp(ls_file_t *info, int *col, int options)
-{
-	char lbr, rbr;
-	char tmp[300];
-	int thislen;
-	static int max_col_size = 0;
-
-	if (max_col_size == 0) {
-		max_col_size = 80/(max_name_len + 2 + ((options & INODE_OPT) ? 8 : 0));
-		if (max_col_size == 0)
-			max_col_size = -1;
-		else
-			max_col_size = 80/max_col_size;
-	}
-
-
-	if (info->entry == DIRENT_DELETED_FILE || info->inode_num == 0) {
-		lbr = '>';
-		rbr = '<';
-	}
-	else {
-		lbr = 0;
-		rbr = ' ';
-	}
-
-	if (lbr == 0) {
-		if (options & INODE_OPT)
-			sprintf(tmp, "%7d %s%c", info->inode_num, info->name, rbr);
-		else
-			sprintf(tmp, "%s%c", info->name, rbr);
-	}
-	else {
-		if (options & INODE_OPT)
-			sprintf(tmp, "%7d %c%s%c", info->inode_num, lbr, info->name, rbr);
-		else
-			sprintf(tmp, "%c%s%c", lbr, info->name, rbr);
-	}
-
-	thislen = strlen(tmp);
-
-	if (*col + thislen > 80) {
-		putchar('\n');
-		*col = 0;
-	}
-	thislen = max_col_size - thislen;
-	if (thislen < 0)
-		thislen = 0;
-
-	printf("%s%*.*s", tmp, thislen, thislen, "");
-	*col += max_col_size;
-}
-
-/* Name:    no_sort()
- *
- * Description:
- *
- * This function sorts two ls_file_t structures by the file name
- *
- * Algorithm:
- *
- * Assign two ls_file_t pointers from the input void pointers
- * Return the result of the comparison of the directories & type
- *
- * Global Variables:
- *
- * None
- *
- * Arguments:
- *
- * void *n1;                     The first node being compared
- * void *n2;                     The second node being compared
- *
- * Return Values:
- *
- * >0 - n1 > n2
- * =0 - n1 == n2
- * <0 - n1 < n2
- *
- * Author: Keith W. Sheffield
- * Date:   06/03/2002
- *
- * Modification History:
- *
- * MM/DD/YY      Name               Description
- *
- */
-int no_sort(const void *n1, const void *n2)
-{
-	ls_file_t *f1 = *((ls_file_t **) n1);
-	ls_file_t *f2 = *((ls_file_t **) n2);
-	int retval;
-
-	return((retval = (f1->dir - f2->dir)) ? retval : (f1->type - f2->type));
-
-} /* end of name_sort */
-
-/* Name:    name_sort()
- *
- * Description:
- *
- * This function sorts two ls_file_t structures by the file name
- *
- * Algorithm:
- *
- * Assign two ls_file_t pointers from the input void pointers
- * Return the result of the comparison of the names
- *
- * Global Variables:
- *
- * None
- *
- * Arguments:
- *
- * void *n1;                     The first node being compared
- * void *n2;                     The second node being compared
- *
- * Return Values:
- *
- * >0 - n1 > n2
- * =0 - n1 == n2
- * <0 - n1 < n2
- *
- * Author: Keith W. Sheffield
- * Date:   06/03/2002
- *
- * Modification History:
- *
- * MM/DD/YY      Name               Description
- *
- */
-int name_sort(const void *n1, const void *n2)
-{
-	ls_file_t *f1 = *((ls_file_t **) n1);
-	ls_file_t *f2 = *((ls_file_t **) n2);
-	int retval;
-
-	return((retval = (f1->dir - f2->dir)) ? retval :
-	       ((retval = (f1->type - f2->type)) ? retval :
-	        strcmp(f1->name, f2->name)));
-} /* end of name_sort */
 
 int full_name_sort(const void *n1, const void *n2)
 {
@@ -1216,142 +1279,6 @@ int full_name_sort(const void *n1, const void *n2)
 
 	return(strcmp(f1->full_name, f2->full_name));
 }
-
-/* Name:    inode_sort()
- *
- * Description:
- *
- * This function sorts two ls_file_t structures by the file inode number
- *
- * Algorithm:
- *
- * Assign two ls_file_t pointers from the input void pointers
- * Return the result of the comparison of the inode numbers
- *
- * Global Variables:
- *
- * None
- *
- * Arguments:
- *
- * void *n1;                     The first node being compared
- * void *n2;                     The second node being compared
- *
- * Return Values:
- *
- * >0 - n1 > n2
- * =0 - n1 == n2
- * <0 - n1 < n2
- *
- * Author: Keith W. Sheffield
- * Date:   06/03/2002
- *
- * Modification History:
- *
- * MM/DD/YY      Name               Description
- *
- */
-int inode_sort(const void *n1, const void *n2)
-{
-	ls_file_t *f1 = *((ls_file_t **) n1);
-	ls_file_t *f2 = *((ls_file_t **) n2);
-	int retval;
-
-	return((retval = (f1->dir - f2->dir)) ? retval :
-	       ((retval = (f1->type - f2->type)) ? retval :
-	        (int)(f1->inode_num - f2->inode_num)));
-} /* end of inode_sort */
-
-/* Name:    mod_time_sort()
- *
- * Description:
- *
- * This function sorts two ls_file_t structures by the file modification time
- *
- * Algorithm:
- *
- * Assign two ls_file_t pointers from the input void pointers
- * Return the result of the comparison of the modification time
- *
- * Global Variables:
- *
- * None
- *
- * Arguments:
- *
- * void *n1;                     The first node being compared
- * void *n2;                     The second node being compared
- *
- * Return Values:
- *
- * >0 - n1 > n2
- * =0 - n1 == n2
- * <0 - n1 < n2
- *
- * Author: Keith W. Sheffield
- * Date:   06/03/2002
- *
- * Modification History:
- *
- * MM/DD/YY      Name               Description
- *
- */
-int mod_time_sort(const void *n1, const void *n2)
-{
-	ls_file_t *f1 = *((ls_file_t **) n1);
-	ls_file_t *f2 = *((ls_file_t **) n2);
-	int retval;
-
-	return((retval = (f1->dir - f2->dir)) ? retval :
-	       ((retval = (f1->type - f2->type)) ? retval :
-	        (int)(f2->inode.i_mtime - f1->inode.i_mtime)));
-
-} /* end of mod_time_sort */
-
-/* Name:    creat_time_sort()
- *
- * Description:
- *
- * This function sorts two ls_file_t structures by the file creation time
- *
- * Algorithm:
- *
- * Assign two ls_file_t pointers from the input void pointers
- * Return the result of the comparison of the creation time
- *
- * Global Variables:
- *
- * None
- *
- * Arguments:
- *
- * void *n1;                     The first node being compared
- * void *n2;                     The second node being compared
- *
- * Return Values:
- *
- * >0 - n1 > n2
- * =0 - n1 == n2
- * <0 - n1 < n2
- *
- * Author: Keith W. Sheffield
- * Date:   06/03/2002
- *
- * Modification History:
- *
- * MM/DD/YY      Name               Description
- *
- */
-int creat_time_sort(const void *n1, const void *n2)
-{
-	ls_file_t *f1 = *((ls_file_t **) n1);
-	ls_file_t *f2 = *((ls_file_t **) n2);
-	int retval;
-
-	return((retval = (f1->dir - f2->dir)) ? retval :
-	       ((retval = (f1->type - f2->type)) ? retval :
-	        (int)(f2->inode.i_ctime - f1->inode.i_ctime)));
-} /* end of creat_time_sort */
 
 /* Name:    remove_ls_dups()
  *
