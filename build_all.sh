@@ -44,7 +44,14 @@ mkdir BUILD
 cd BUILD
 PKG_CONFIG_PATH="$ROOT_DIR/e2fsprogs/BUILD/INSTALL/lib/pkgconfig" ../configure
 if [ $? != 0 ]; then echo "e2tools: configure failed!"; exit 2; fi
-make make_fs_config$EXE
-if [ $? != 0 ]; then echo "make_fs_config: make failed!"; exit 2; fi
+make
+if [ $? != 0 ]; then echo "make failed!"; exit 2; fi
 
+echo "\n\n---------- OUTPUT FILES ----------"
+file e2tools$EXE
+echo ""
 file make_fs_config$EXE
+echo ""
+file sysXtract$EXE
+echo ""
+echo ""
